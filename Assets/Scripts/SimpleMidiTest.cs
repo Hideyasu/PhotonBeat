@@ -1,6 +1,7 @@
 using UnityEngine;
 using UnityEngine.InputSystem;
 using Minis;
+using System.Collections;
 using System.Collections.Generic;
 
 public class SimpleMidiTest : MonoBehaviour
@@ -16,14 +17,99 @@ public class SimpleMidiTest : MonoBehaviour
     public float releaseTime = 0.5f;
     
     private Dictionary<int, AudioSource> activeSources = new Dictionary<int, AudioSource>();
+    private Dictionary<int, AudioClip> preGeneratedClips = new Dictionary<int, AudioClip>();
     private int sampleRate = 44100;
+    
+    // ビジュアライザー
+    private KeyboardVisualizer visualizer;
+    
+    void Awake()
+    {
+        // 最速で初期化
+        Application.targetFrameRate = 120; // フレームレート上限を上げる
+    }
+    
     void Start()
     {
+        Debug.Log("=== SimpleMidiTest (LX88) 起動 ===");
+        
+        // AudioListenerの確認
+        var listener = FindObjectOfType<AudioListener>();
+        if (listener == null)
+        {
+            gameObject.AddComponent<AudioListener>();
+            Debug.Log("AudioListenerを自動追加しました。");
+        }
+        
+        // オーディオ設定を低遅延に最適化
+        var audioConfig = AudioSettings.GetConfiguration();
+        audioConfig.dspBufferSize = 256; // バッファサイズを小さく
+        audioConfig.sampleRate = 48000; // 低遅延サンプルレート
+        audioConfig.speakerMode = AudioSpeakerMode.Stereo;
+        AudioSettings.Reset(audioConfig);
+        
+        sampleRate = AudioSettings.outputSampleRate;
+        AudioListener.volume = 1.0f;
+        
+        Debug.Log($"低遅延オーディオ設定:");
+        Debug.Log($"- DSPバッファ: {audioConfig.dspBufferSize}");
+        Debug.Log($"- サンプルレート: {sampleRate}Hz");
+        
+        // ビジュアライザーを探すか作成
+        visualizer = FindObjectOfType<KeyboardVisualizer>();
+        if (visualizer == null)
+        {
+            GameObject visualizerObject = new GameObject("KeyboardVisualizer_LX88");
+            visualizer = visualizerObject.AddComponent<KeyboardVisualizer>();
+            Debug.Log("KeyboardVisualizerを作成しました");
+        }
+        
+        // 全音域のAudioClipを事前生成
+        StartCoroutine(PreGenerateAudioClips());
+        
         // MIDI デバイスが接続されたときのコールバック
         InputSystem.onDeviceChange += OnDeviceChange;
         
         // 既に接続されているMIDIデバイスをチェック
         CheckExistingMidiDevices();
+    }
+    
+    IEnumerator PreGenerateAudioClips()
+    {
+        Debug.Log("AudioClip事前生成開始...");
+        
+        // 全MIDI音域（0-127）を事前生成
+        for (int note = 0; note < 128; note++)
+        {
+            float frequency = 440f * Mathf.Pow(2f, (note - 69f) / 12f);
+            
+            // 短めのクリップ（1秒）でループ再生用
+            int sampleLength = Mathf.FloorToInt(sampleRate * 1f);
+            AudioClip clip = AudioClip.Create($"PreGen_Note_{note}", sampleLength, 1, sampleRate, false);
+            float[] samples = new float[sampleLength];
+            
+            // 極短アタック（1ms）
+            float attackSamples = sampleRate * 0.001f;
+            
+            for (int i = 0; i < sampleLength; i++)
+            {
+                float time = (float)i / sampleRate;
+                float envelope = i < attackSamples ? (float)i / attackSamples : 1f;
+                
+                // よりリッチな音色（基音＋倍音）
+                samples[i] = Mathf.Sin(2f * Mathf.PI * frequency * time) * envelope * 0.25f;
+                samples[i] += Mathf.Sin(4f * Mathf.PI * frequency * time) * envelope * 0.1f;
+                samples[i] += Mathf.Sin(8f * Mathf.PI * frequency * time) * envelope * 0.05f;
+            }
+            
+            clip.SetData(samples, 0);
+            preGeneratedClips[note] = clip;
+            
+            // 8音ごとに1フレーム待つ
+            if (note % 8 == 0) yield return null;
+        }
+        
+        Debug.Log($"AudioClip事前生成完了: 全{preGeneratedClips.Count}音");
     }
     
     void OnDeviceChange(InputDevice device, InputDeviceChange change)
@@ -38,6 +124,7 @@ public class SimpleMidiTest : MonoBehaviour
             else if (change == InputDeviceChange.Removed)
             {
                 Debug.Log($"MIDI デバイスが切断されました: {midiDevice.name}");
+                UnsubscribeFromMidiEvents(midiDevice);
             }
         }
     }
@@ -62,70 +149,105 @@ public class SimpleMidiTest : MonoBehaviour
     
     void SubscribeToMidiEvents(MidiDevice midiDevice)
     {
+        // デバイスが有効かチェック
+        if (midiDevice == null || !midiDevice.enabled) return;
+        
         // ノートオン（キーを押した時）
-        midiDevice.onWillNoteOn += (note, velocity) =>
-        {
-            string noteName = GetNoteName(note.noteNumber);
-            Debug.Log($"[ノートON] キー: {note.noteNumber} ({noteName}) ベロシティ: {velocity} デバイス: {midiDevice.name}");
-            PlayNote(note.noteNumber, velocity);
-        };
+        midiDevice.onWillNoteOn += OnNoteOn;
         
         // ノートオフ（キーを離した時）
-        midiDevice.onWillNoteOff += (note) =>
-        {
-            string noteName = GetNoteName(note.noteNumber);
-            Debug.Log($"[ノートOFF] キー: {note.noteNumber} ({noteName}) デバイス: {midiDevice.name}");
-            StopNote(note.noteNumber);
-        };
+        midiDevice.onWillNoteOff += OnNoteOff;
         
         // コントロールチェンジ（ノブやスライダー）
-        midiDevice.onWillControlChange += (control, value) =>
-        {
-            Debug.Log($"[コントロール] CC{control.controlNumber}: {value} デバイス: {midiDevice.name}");
-        };
+        midiDevice.onWillControlChange += OnControlChange;
     }
     
-    void PlayNote(int midiNote, float velocity)
+    void UnsubscribeFromMidiEvents(MidiDevice midiDevice)
     {
-        // 既に再生中の音を停止
+        if (midiDevice == null) return;
+        
+        midiDevice.onWillNoteOn -= OnNoteOn;
+        midiDevice.onWillNoteOff -= OnNoteOff;
+        midiDevice.onWillControlChange -= OnControlChange;
+    }
+    
+    void OnNoteOn(MidiNoteControl note, float velocity)
+    {
+        if (this == null) return; // オブジェクトが破棄されていたら何もしない
+        
+        PlayNoteImmediate(note.noteNumber, velocity);
+        
+        // ビジュアルエフェクトを再生
+        if (visualizer != null)
+        {
+            visualizer.PlayNoteEffect(note.noteNumber, velocity);
+        }
+    }
+    
+    void OnNoteOff(MidiNoteControl note)
+    {
+        if (this == null) return; // オブジェクトが破棄されていたら何もしない
+        
+        StopNote(note.noteNumber);
+    }
+    
+    void OnControlChange(MidiValueControl control, float value)
+    {
+        // 必要に応じて処理
+    }
+    
+    void PlayNoteImmediate(int midiNote, float velocity)
+    {
+        // 既存の音を即座に停止
         if (activeSources.ContainsKey(midiNote))
         {
-            StopNote(midiNote);
+            var oldSource = activeSources[midiNote];
+            if (oldSource != null) 
+            {
+                oldSource.Stop();
+                Destroy(oldSource.gameObject);
+            }
+            activeSources.Remove(midiNote);
         }
         
-        // 新しいAudioSourceを作成
-        GameObject noteObject = new GameObject($"Note_{midiNote}");
+        // AudioSourceを作成
+        GameObject noteObject = new GameObject($"LX88_Note_{midiNote}");
         noteObject.transform.SetParent(transform);
         AudioSource audioSource = noteObject.AddComponent<AudioSource>();
         
-        // 周波数計算（A4 = 440Hz）
-        float frequency = 440f * Mathf.Pow(2f, (midiNote - 69f) / 12f);
-        
-        // オーディオクリップを生成
-        float duration = 5f; // 最大5秒
-        AudioClip clip = AudioClip.Create($"Tone_{midiNote}", sampleRate * (int)duration, 1, sampleRate, false);
-        
-        float[] samples = new float[sampleRate * (int)duration];
-        for (int i = 0; i < samples.Length; i++)
+        // 事前生成されたクリップがあれば使用、なければ即座に生成
+        if (preGeneratedClips.ContainsKey(midiNote))
         {
-            float time = (float)i / sampleRate;
+            audioSource.clip = preGeneratedClips[midiNote];
+            audioSource.volume = velocity;
+        }
+        else
+        {
+            // リアルタイムで生成（範囲外の音用）
+            float frequency = 440f * Mathf.Pow(2f, (midiNote - 69f) / 12f);
+            int sampleLength = Mathf.FloorToInt(sampleRate * 0.5f);
+            AudioClip clip = AudioClip.Create($"RT_Note_{midiNote}", sampleLength, 1, sampleRate, false);
+            float[] samples = new float[sampleLength];
             
-            // エンベロープ（アタック）
-            float envelope = 1f;
-            if (time < attackTime)
+            for (int i = 0; i < sampleLength; i++)
             {
-                envelope = time / attackTime;
+                float time = (float)i / sampleRate;
+                float envelope = time < 0.01f ? time / 0.01f : 1f;
+                samples[i] = Mathf.Sin(2f * Mathf.PI * frequency * time) * envelope * 0.3f;
             }
             
-            // サイン波生成
-            samples[i] = Mathf.Sin(2f * Mathf.PI * frequency * time) * envelope * volume * velocity;
+            clip.SetData(samples, 0);
+            audioSource.clip = clip;
+            audioSource.volume = velocity;
+            
+            // 次回用にキャッシュ
+            preGeneratedClips[midiNote] = clip;
         }
         
-        clip.SetData(samples, 0);
-        
-        audioSource.clip = clip;
-        audioSource.loop = true;
-        audioSource.volume = volume * velocity;
+        // 低レイテンシー設定
+        audioSource.priority = 0; // 最高優先度
+        audioSource.spatialBlend = 0f; // 2Dサウンド
+        audioSource.loop = true; // ノートオフまでループ
         audioSource.Play();
         
         activeSources[midiNote] = audioSource;
@@ -144,7 +266,7 @@ public class SimpleMidiTest : MonoBehaviour
         }
     }
     
-    System.Collections.IEnumerator FadeOutAndDestroy(AudioSource source, int midiNote)
+    IEnumerator FadeOutAndDestroy(AudioSource source, int midiNote)
     {
         float startVolume = source.volume;
         float fadeTime = 0f;
@@ -175,6 +297,16 @@ public class SimpleMidiTest : MonoBehaviour
     {
         InputSystem.onDeviceChange -= OnDeviceChange;
         
+        // すべてのMIDIデバイスからイベント登録解除
+        var allDevices = InputSystem.devices;
+        foreach (var device in allDevices)
+        {
+            if (device is MidiDevice midiDevice)
+            {
+                UnsubscribeFromMidiEvents(midiDevice);
+            }
+        }
+        
         // 全てのアクティブなオーディオソースを停止
         foreach (var source in activeSources.Values)
         {
@@ -184,5 +316,8 @@ public class SimpleMidiTest : MonoBehaviour
             }
         }
         activeSources.Clear();
+        
+        // 事前生成したクリップをクリア
+        preGeneratedClips.Clear();
     }
 }
