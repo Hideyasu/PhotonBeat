@@ -23,6 +23,9 @@ public class SimpleMidiTest : MonoBehaviour
     // ビジュアライザー
     private KeyboardVisualizer visualizer;
     
+    // ノートゲーム
+    private MidiNoteGame noteGame;
+    
     void Awake()
     {
         // 最速で初期化
@@ -64,6 +67,9 @@ public class SimpleMidiTest : MonoBehaviour
             Debug.Log("KeyboardVisualizerを作成しました");
         }
         
+        // ノートゲームの参照を取得
+        noteGame = FindObjectOfType<MidiNoteGame>();
+        
         // 全音域のAudioClipを事前生成
         StartCoroutine(PreGenerateAudioClips());
         
@@ -83,18 +89,24 @@ public class SimpleMidiTest : MonoBehaviour
         {
             float frequency = 440f * Mathf.Pow(2f, (note - 69f) / 12f);
             
-            // 短めのクリップ（1秒）でループ再生用
-            int sampleLength = Mathf.FloorToInt(sampleRate * 1f);
+            // 自然な減衰付きクリップ（1.5秒）
+            int sampleLength = Mathf.FloorToInt(sampleRate * 1.5f);
             AudioClip clip = AudioClip.Create($"PreGen_Note_{note}", sampleLength, 1, sampleRate, false);
             float[] samples = new float[sampleLength];
-            
-            // 極短アタック（1ms）
-            float attackSamples = sampleRate * 0.001f;
             
             for (int i = 0; i < sampleLength; i++)
             {
                 float time = (float)i / sampleRate;
-                float envelope = i < attackSamples ? (float)i / attackSamples : 1f;
+                // ADSR エンベロープ
+                float envelope = 1f;
+                if (time < 0.01f) // アタック（10ms）
+                {
+                    envelope = time / 0.01f;
+                }
+                else if (time > 0.8f) // リリース（0.8秒後から減衰）
+                {
+                    envelope = Mathf.Exp(-4f * (time - 0.8f)); // 指数的減衰
+                }
                 
                 // よりリッチな音色（基音＋倍音）
                 samples[i] = Mathf.Sin(2f * Mathf.PI * frequency * time) * envelope * 0.25f;
@@ -182,6 +194,12 @@ public class SimpleMidiTest : MonoBehaviour
         {
             visualizer.PlayNoteEffect(note.noteNumber, velocity);
         }
+        
+        // ノートゲームに入力を通知
+        if (noteGame != null)
+        {
+            noteGame.OnMidiNotePressed(note.noteNumber, velocity);
+        }
     }
     
     void OnNoteOff(MidiNoteControl note)
@@ -196,7 +214,7 @@ public class SimpleMidiTest : MonoBehaviour
         // 必要に応じて処理
     }
     
-    void PlayNoteImmediate(int midiNote, float velocity)
+    public void PlayNoteImmediate(int midiNote, float velocity, bool enableLoop = true)
     {
         // 既存の音を即座に停止
         if (activeSources.ContainsKey(midiNote))
@@ -219,26 +237,38 @@ public class SimpleMidiTest : MonoBehaviour
         if (preGeneratedClips.ContainsKey(midiNote))
         {
             audioSource.clip = preGeneratedClips[midiNote];
-            audioSource.volume = velocity;
+            audioSource.volume = velocity * volume; // 全体音量も適用
+            audioSource.loop = enableLoop; // 引数でループを制御
         }
         else
         {
-            // リアルタイムで生成（範囲外の音用）
+            // リアルタイムで生成（範囲外の音用、減衰付き）
             float frequency = 440f * Mathf.Pow(2f, (midiNote - 69f) / 12f);
-            int sampleLength = Mathf.FloorToInt(sampleRate * 0.5f);
+            int sampleLength = Mathf.FloorToInt(sampleRate * 1.5f); // 1.5秒の音
             AudioClip clip = AudioClip.Create($"RT_Note_{midiNote}", sampleLength, 1, sampleRate, false);
             float[] samples = new float[sampleLength];
             
             for (int i = 0; i < sampleLength; i++)
             {
                 float time = (float)i / sampleRate;
-                float envelope = time < 0.01f ? time / 0.01f : 1f;
+                // ADSR エンベロープ（アタック・ディケイ・リリース）
+                float envelope = 1f;
+                if (time < 0.01f) // アタック
+                {
+                    envelope = time / 0.01f;
+                }
+                else if (time > 1.0f) // リリース（1秒後から減衰）
+                {
+                    envelope = Mathf.Exp(-3f * (time - 1.0f)); // 指数的減衰
+                }
+                
                 samples[i] = Mathf.Sin(2f * Mathf.PI * frequency * time) * envelope * 0.3f;
             }
             
             clip.SetData(samples, 0);
             audioSource.clip = clip;
-            audioSource.volume = velocity;
+            audioSource.volume = velocity * volume;
+            audioSource.loop = false; // リアルタイム生成は減衰付きなのでループ無効
             
             // 次回用にキャッシュ
             preGeneratedClips[midiNote] = clip;
@@ -247,13 +277,12 @@ public class SimpleMidiTest : MonoBehaviour
         // 低レイテンシー設定
         audioSource.priority = 0; // 最高優先度
         audioSource.spatialBlend = 0f; // 2Dサウンド
-        audioSource.loop = true; // ノートオフまでループ
         audioSource.Play();
         
         activeSources[midiNote] = audioSource;
     }
     
-    void StopNote(int midiNote)
+    public void StopNote(int midiNote)
     {
         if (activeSources.ContainsKey(midiNote))
         {

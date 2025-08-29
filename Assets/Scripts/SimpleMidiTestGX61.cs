@@ -25,6 +25,9 @@ public class SimpleMidiTestGX61 : MonoBehaviour
     // ビジュアライザー
     private KeyboardVisualizer visualizer;
     
+    // ノートゲーム
+    private MidiNoteGame noteGame;
+    
     // MIDIメッセージをメインスレッドで処理するためのキュー
     private struct MidiEvent
     {
@@ -75,6 +78,9 @@ public class SimpleMidiTestGX61 : MonoBehaviour
             visualizer = visualizerObject.AddComponent<KeyboardVisualizer>();
             Debug.Log("KeyboardVisualizerを作成しました");
         }
+        
+        // ノートゲームの参照を取得
+        noteGame = FindObjectOfType<MidiNoteGame>();
         
         // よく使用される音階のAudioClipを事前生成（全音域）
         StartCoroutine(PreGenerateAudioClips());
@@ -239,6 +245,12 @@ public class SimpleMidiTestGX61 : MonoBehaviour
                     {
                         visualizer.PlayNoteEffect(midiEvent.note, normalizedVelocity);
                     }
+                    
+                    // ノートゲームに入力を通知
+                    if (noteGame != null)
+                    {
+                        noteGame.OnMidiNotePressed(midiEvent.note, normalizedVelocity);
+                    }
                 }
                 else
                 {
@@ -294,7 +306,7 @@ public class SimpleMidiTestGX61 : MonoBehaviour
         }
     }
     
-    void PlayNoteImmediate(int midiNote, float velocity)
+    public void PlayNoteImmediate(int midiNote, float velocity)
     {
         // 既存の音を即座に停止
         if (activeSources.ContainsKey(midiNote))
@@ -317,6 +329,7 @@ public class SimpleMidiTestGX61 : MonoBehaviour
         {
             audioSource.clip = preGeneratedClips[midiNote];
             audioSource.volume = velocity;
+            audioSource.loop = true; // 手動演奏時はループを有効にする
         }
         else
         {
@@ -479,7 +492,7 @@ public class SimpleMidiTestGX61 : MonoBehaviour
         activeSources[midiNote] = audioSource;
     }
     
-    void StopNote(int midiNote)
+    public void StopNote(int midiNote)
     {
         if (activeSources.ContainsKey(midiNote))
         {

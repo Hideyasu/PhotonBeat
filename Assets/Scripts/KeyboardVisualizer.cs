@@ -94,8 +94,8 @@ public class KeyboardVisualizer : MonoBehaviour
             colorKeys[4] = new GradientColorKey(new Color(1f, 0f, 0.5f), 1.0f); // ピンク
             
             GradientAlphaKey[] alphaKeys = new GradientAlphaKey[2];
-            alphaKeys[0] = new GradientAlphaKey(1.0f, 0.0f);
-            alphaKeys[1] = new GradientAlphaKey(1.0f, 1.0f);
+            alphaKeys[0] = new GradientAlphaKey(0.3f, 0.0f); // 透明度を下げる
+            alphaKeys[1] = new GradientAlphaKey(0.3f, 1.0f); // 透明度を下げる
             
             noteColorGradient.SetKeys(colorKeys, alphaKeys);
         }
@@ -248,6 +248,8 @@ public class KeyboardVisualizer : MonoBehaviour
         }
         
         noteColor *= colorIntensity * velocity;
+        // 透明度を下げて背景のノーツが見えるようにする
+        noteColor.a = 0.4f;
         
         // エフェクトを生成
         SpawnEffect(worldPosition, noteColor, velocity);
@@ -303,6 +305,8 @@ public class KeyboardVisualizer : MonoBehaviour
         
         // 画面座標に変換（52白鍵が画面幅に収まるように）
         float normalizedPosition = whiteKeyPosition / 52.0f;
+        // 左右を反転（プロジェクター照射のため）
+        normalizedPosition = 1.0f - normalizedPosition;
         float xPosition = -screenWidth * keyboardWidthOffset * 0.5f + normalizedPosition * screenWidth * keyboardWidthOffset;
         
         return xPosition;
@@ -329,8 +333,9 @@ public class KeyboardVisualizer : MonoBehaviour
         if (ps != null)
         {
             var main = ps.main;
-            // ネオンカラーをHDR（高輝度）で設定
-            Color hdrColor = color * (2f + velocity * 3f); // HDR強度を上げる
+            // ネオンカラーをHDR（高輝度）で設定、透明度を下げる
+            Color hdrColor = color * (1.5f + velocity * 2f); // HDR強度を少し下げる
+            hdrColor.a = 0.5f; // 透明度を50%に設定
             main.startColor = hdrColor;
             
             // Inspectorで設定可能な太さを適用
@@ -364,7 +369,9 @@ public class KeyboardVisualizer : MonoBehaviour
         Light light = effectObject.GetComponent<Light>();
         if (light != null)
         {
-            light.color = color;
+            Color lightColor = color;
+            lightColor.a = 0.3f; // ライトの透明度も下げる
+            light.color = lightColor;
             light.intensity = 4f + velocity * 8f; // より明るく
             light.range = 6f + velocity * 6f; // より広範囲
         }
